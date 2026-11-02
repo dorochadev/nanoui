@@ -37,3 +37,14 @@ cache had it. Changes from upstream are listed here, so they can go back as pull
 - **The caret stands before its place.** A text field's bar caret was drawn from the boundary rightwards, over the
   first 1.5 points of the letter after it: in an empty field it sat on the placeholder's first letter. It now ends at
   the boundary (`textfield.zig`, `textfield_lines.zig`); Vim's block still covers the letter it's on.
+
+- **Native Liquid Glass on macOS 26+** (`Surface.setNativeGlass(true)`, behind a stage). Each pane that can be native
+  is AppKit's `NSGlassEffectView`, so it refracts what's really behind it, the stage's views included, instead of the
+  shader's imitation (which reads holes as black). `glass_native.split` sorts each frame by the painter's rule: what a
+  pane covers is drawn in a second Metal layer under it (`Renderer.underLayer`, `drawLayered`), what's painted after
+  it and over it (its label, a menu) in the surface's own layer above. The views are kept by node id, set only where
+  they changed, moved in the frame's transaction, clipped to what shows of their pane (`clipsToBounds`), and never
+  take the pointer. Tint, the clear style, opacity and, on macOS 27, interactive glass for controls carry over.
+  Shaped panes, panes in an opacity group, turned panes and glass on what's drawn on glass stay the shader's, as do
+  other platforms and the CPU renderer. No `NSGlassEffectContainerView`: it lifts panes out of the views clipping
+  them and blurs glass on glass into one. Tests: `glass_native.zig`, and `tests_glass.zig`'s "native glass".
