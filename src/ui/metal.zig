@@ -69,6 +69,13 @@ pub const Renderer = struct {
     frame_textures: metal_texture.Textures = .{ .gpa = std.heap.page_allocator },
     /// Pixel buffers each frame in flight holds, by its instance buffer.
     held: [frames_in_flight]std.ArrayList(*anyopaque) = @splat(.empty),
+    /// A second layer, under native glass (`underLayer`): what the glass
+    /// refracts is drawn here, and `layer` holds what's over it. Its
+    /// instances go in the same slot of the ring as the frame's.
+    under: ?objc.Object = null,
+    under_framebuffer_only: bool = true,
+    under_buffers: [frames_in_flight]?objc.Object = @splat(null),
+    under_capacities: [frames_in_flight]usize = @splat(0),
     pub fn init() !Renderer {
         const pool = objc.Pool.push();
         defer pool.pop();
@@ -162,6 +169,8 @@ pub const Renderer = struct {
         self.frame_textures.deinit();
         objc.dispatch_release(self.in_flight);
         for (self.buffers) |b| if (b) |buf| objc.release(buf);
+        for (self.under_buffers) |b| if (b) |buf| objc.release(buf);
+        if (self.under) |u| objc.release(u);
         objc.release(self.layer);
         self.glass.deinit();
         objc.release(self.pipeline);
@@ -183,11 +192,32 @@ pub const Renderer = struct {
             self.layer_h = 0;
         }
         if (size.w <= 1 and size.h <= 1) self.glass.releaseTextures();
-        objc.msg(void, self.layer, "setContentsScale:", .{@as(f64, scale)});
-        objc.msg(void, self.layer, "setDrawableSize:", .{objc.CGSize{
-            .width = @max(1, @round(size.w * scale)),
-            .height = @max(1, @round(size.h * scale)),
-        }});
+        for ([_]?objc.Object{ self.layer, self.under }) |l| if (l) |layer| {
+            objc.msg(void, layer, "setContentsScale:", .{@as(f64, scale)});
+            objc.msg(void, layer, "setDrawableSize:", .{objc.CGSize{
+                .width = @max(1, @round(size.w * scale)),
+                .height = @max(1, @round(size.h * scale)),
+            }});
+        };
+    }
+
+    /// The layer under native glass, made the first time it's asked for,
+    /// as `layer` but transparent, its frames always in the transaction
+    /// (native glass moves with them), and not waiting long for a drawable.
+    pub fn underLayer(self: *Renderer) objc.Object {
+        if (self.under) |u| return u;
+        const u = objc.new("CAMetalLayer");
+        objc.msg(void, u, "setDevice:", .{self.device});
+        objc.msg(void, u, "setPixelFormat:", .{pixel_format});
+        objc.msg(void, u, "setFramebufferOnly:", .{objc.YES});
+        objc.msg(void, u, "setMaximumDrawableCount:", .{@as(objc.NSUInteger, 3)});
+        objc.msg(void, u, "setOpaque:", .{objc.NO});
+        objc.msg(void, u, "setPresentsWithTransaction:", .{objc.YES});
+        if (objc.msg(?objc.Object, self.layer, "colorspace", .{})) |cs| objc.msg(void, u, "setColorspace:", .{cs});
+        objc.msg(void, u, "setContentsScale:", .{objc.msg(f64, self.layer, "contentsScale", .{})});
+        objc.msg(void, u, "setDrawableSize:", .{objc.msg(objc.CGSize, self.layer, "drawableSize", .{})});
+        self.under = u;
+        return u;
     }
 
     /// Draws `instances` over `clear` into the window, sized `size` points.
@@ -196,15 +226,18 @@ pub const Renderer = struct {
     }
 
     pub fn drawLogged(self: *Renderer, instances: []const Instance, atlas: objc.Object, size: types.Size, clear: types.Color, log: ?*FrameLog, record_idx: usize) DrawStats {
+        return self.drawLayered(instances, null, atlas, size, clear, log, record_idx);
+    }
+
+    /// As `drawLogged`, with `under` (when native glass shows) drawn in
+    /// the layer under the glass, cleared, and `instances` in `layer` over
+    /// it, both presented in the window's transaction.
+    pub fn drawLayered(self: *Renderer, instances: []const Instance, under: ?[]const Instance, atlas: objc.Object, size: types.Size, clear: types.Color, log: ?*FrameLog, record_idx: usize) DrawStats {
         const pool = objc.Pool.push();
         defer pool.pop();
-        if (self.framebuffer_only) {
-            for (instances) |inst| if (inst.kind == Kind.glass) {
-                objc.msg(void, self.layer, "setFramebufferOnly:", .{objc.NO});
-                self.framebuffer_only = false;
-                break;
-            };
-        }
+        // A pane of glass the shader draws reads the backdrop.
+        readable(self.layer, &self.framebuffer_only, instances);
+        if (under) |u| readable(self.underLayer(), &self.under_framebuffer_only, u);
         const given = self.given_drawable;
         self.given_drawable = null;
         const t0 = cf.CACurrentMediaTime();
@@ -224,6 +257,17 @@ pub const Renderer = struct {
         // The slot's last frame is done: its pixel buffers can go.
         const held = &self.held[self.next_buffer];
         self.frame_textures.release(held);
+        if (under) |u| below: {
+            // Without a drawable this frame the layer under keeps its last.
+            const below = objc.msg(?objc.Object, self.under.?, "nextDrawable", .{}) orelse break :below;
+            const below_tex = objc.msg(?objc.Object, below, "texture", .{}) orelse break :below;
+            const ubuf = uploadInto(self.device, &self.under_buffers, &self.under_capacities, self.next_buffer, u);
+            const ucmd = self.encode(below_tex, ubuf, u, atlas, size, types.Color.transparent, held);
+            // On the queue before the frame's, so it's done when the frame is.
+            objc.msg(void, ucmd, "commit", .{});
+            objc.msg(void, ucmd, "waitUntilScheduled", .{});
+            objc.msg(void, below, "present", .{});
+        }
         const buffer = self.upload(instances);
         const cmd = self.encode(texture, buffer, instances, atlas, size, clear, held);
         const slot_idx = self.next_done;
@@ -232,7 +276,7 @@ pub const Renderer = struct {
         var done = objc.Block(DoneSlot, &.{objc.Object}).init(&self.done_slots[slot_idx], frameDone);
         objc.msg(void, cmd, "addCompletedHandler:", .{@as(*anyopaque, @ptrCast(&done))});
         const t2 = cf.CACurrentMediaTime();
-        if (sync or self.in_transaction) {
+        if (sync or self.in_transaction or under != null) {
             // In the window's transaction: a resizing window never shows a
             // stretched or misplaced frame.
             objc.msg(void, cmd, "commit", .{});
@@ -261,20 +305,34 @@ pub const Renderer = struct {
 
     /// Copies `instances` into the next buffer of the ring, grown as needed.
     fn upload(self: *Renderer, instances: []const Instance) ?objc.Object {
-        if (instances.len == 0) return null;
         const i = self.next_buffer;
         self.next_buffer = (i + 1) % frames_in_flight;
+        return uploadInto(self.device, &self.buffers, &self.capacities, i, instances);
+    }
+
+    fn uploadInto(device: objc.Object, buffers: *[frames_in_flight]?objc.Object, capacities: *[frames_in_flight]usize, i: usize, instances: []const Instance) ?objc.Object {
+        if (instances.len == 0) return null;
         const bytes = std.mem.sliceAsBytes(instances);
-        if (self.capacities[i] < bytes.len) {
-            if (self.buffers[i]) |old| objc.release(old);
+        if (capacities[i] < bytes.len) {
+            if (buffers[i]) |old| objc.release(old);
             const cap = @max(bytes.len * 3 / 2, 64 * 1024);
-            self.buffers[i] = objc.msg(objc.Object, self.device, "newBufferWithLength:options:", .{ @as(objc.NSUInteger, cap), @as(objc.NSUInteger, 0) });
-            self.capacities[i] = cap;
+            buffers[i] = objc.msg(objc.Object, device, "newBufferWithLength:options:", .{ @as(objc.NSUInteger, cap), @as(objc.NSUInteger, 0) });
+            capacities[i] = cap;
         }
-        const buf = self.buffers[i].?;
+        const buf = buffers[i].?;
         const dst: [*]u8 = @ptrCast(objc.msg(*anyopaque, buf, "contents", .{}));
         @memcpy(dst[0..bytes.len], bytes);
         return buf;
+    }
+
+    /// Lets `layer`'s drawables be read once a pane of glass is drawn in it.
+    fn readable(layer: objc.Object, framebuffer_only: *bool, instances: []const Instance) void {
+        if (!framebuffer_only.*) return;
+        for (instances) |inst| if (inst.kind == Kind.glass) {
+            objc.msg(void, layer, "setFramebufferOnly:", .{objc.NO});
+            framebuffer_only.* = false;
+            return;
+        };
     }
 
     pub fn setInTransaction(self: *Renderer, on: bool) void {
