@@ -304,6 +304,7 @@ pub fn textField(c: *Context, buffer: *TextBuffer, opts: Options) Result {
     if (it.hovered) {
         c.cursor_hand = false;
         c.cursor_text = true;
+        c.cursor_field = true;
     }
     const focus_t = c.animate(it.id, 0, if (it.focused) 1 else 0, 20);
     const n = c.node(i);

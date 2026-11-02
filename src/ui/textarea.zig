@@ -107,6 +107,7 @@ pub fn textArea(c: *Context, buffer: *tf.TextBuffer, opts: AreaOptions) tf.Resul
     if (it.hovered) {
         c.cursor_hand = false;
         c.cursor_text = true;
+        c.cursor_field = true;
     }
     if (!opts.bare) {
         const focus_t = c.animate(it.id, 0, if (it.focused) 1 else 0, 20);

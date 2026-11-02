@@ -28,3 +28,8 @@ cache had it. Changes from upstream are listed here, so they can go back as pull
 - **`ui.hole` lets the pointer through.** It marked its box interactive and never registered it as a stage hole, so
   the frame took every click over it and the native view under it (a web page) got none. It now registers the node
   (`addStageHoleNode`) and isn't a control, so `inStageHoleAt` hands the pointer to the view below.
+
+- **The I-beam holds in a text field.** Moving the pointer inside one box, `mouseMoved` set the cursor from
+  `pointerOverText` alone (text that selects), which a text field isn't: the cursor turned to the arrow on every
+  move and back to the I-beam on every frame. A field (or text area) under the pointer now sets
+  `Context.cursor_field` as it's built, and the I-beam stays anywhere in it.

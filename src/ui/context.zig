@@ -226,6 +226,9 @@ pub const Context = struct {
     /// once; a view still asks for the hand with `cursor = .hand`.
     hand_cursor: bool = true,
     cursor_text: bool = false,
+    /// The pointer is over a text field (as last built): the I-beam holds
+    /// anywhere in it, not only over text, as the pointer moves within it.
+    cursor_field: bool = false,
     /// A cursor a view asks for, over what widgets set (dividers).
     cursor: ?Cursor = null,
     /// Springs and tweens (`motion.zig`), kept across frames.
@@ -310,6 +313,7 @@ pub const Context = struct {
         c.stage_count = 0;
         c.cursor_hand = false;
         c.cursor_text = false;
+        c.cursor_field = false;
         c.cursor = null;
         c.focused_text = null;
         c.focused_multiline = false;

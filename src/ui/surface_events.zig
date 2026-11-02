@@ -198,7 +198,8 @@ fn mouseMoved(obj: objc.Object, _: objc.SEL, event: objc.Object) callconv(.c) vo
         return;
     }
     // Onto or off text that selects, inside the same box: the cursor only.
-    const over = s.ctx.pointerOverText();
+    // Inside a text field it's the I-beam throughout.
+    const over = s.ctx.cursor_field or s.ctx.pointerOverText();
     if (over != s.ctx.cursor_text) {
         s.ctx.cursor_text = over;
         s.updateCursor();
