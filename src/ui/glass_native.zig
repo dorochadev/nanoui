@@ -4,7 +4,7 @@
 //! label, a menu over it) in a layer over it. `split` sorts a frame's
 //! instances, in paint order, into those two layers and the panes between
 //! them, by the painter's rule: what's painted after a pane and overlaps it
-//! goes over it, the rest under. A pane that something already over a pane
+//! (or comes near it: `near`) goes over it, the rest under. A pane that something already over a pane
 //! overlaps (glass on what's on glass) can't go between the two, and is
 //! drawn by the shader in the upper layer instead.
 const std = @import("std");
@@ -106,7 +106,7 @@ pub fn split(gpa: std.mem.Allocator, frame: []const gpu.Instance, candidates: []
             });
             continue;
         };
-        const over = overlapsPane(bounds, out.panes.items) or overlapsAny(bounds, out.over_rects.items);
+        const over = overlapsPane(grow(bounds, near), out.panes.items) or overlapsAny(bounds, out.over_rects.items);
         const layer: usize = @intFromBool(over);
         if (group_begin) |g| if (!group_in[layer]) {
             group_in[layer] = true;
@@ -117,6 +117,18 @@ pub fn split(gpa: std.mem.Allocator, frame: []const gpu.Instance, candidates: []
             try out.over_rects.append(gpa, bounds);
         } else out.under.appendAssumeCapacity(inst);
     }
+}
+
+/// How near a pane what's painted after it goes over it, though it doesn't
+/// touch it. A pane's view reaches the screen a frame or two before the
+/// frame it was placed in (the layers are drawn ahead), so a pane that
+/// moves is a little ahead of what's drawn: a label it's about to reach
+/// would be under it for that while. Over a pane is always right for what
+/// is painted after it; it only costs a later pane over it being native.
+const near: f32 = 32;
+
+fn grow(r: [4]f32, by: f32) [4]f32 {
+    return .{ r[0] - by, r[1] - by, r[2] + by, r[3] + by };
 }
 
 /// A pane that's flat and upright: one turned, spun or rotated stays the
@@ -245,5 +257,20 @@ test "a pane outside its clip, or turned, isn't native" {
     defer s.deinit(testing.allocator);
     try split(testing.allocator, &frame, &.{ cand(1, 1), cand(2, 2) }, &s);
     try testing.expectEqual(@as(usize, 0), s.panes.items.len);
+    try testing.expectEqual(@as(usize, 2), s.under.items.len);
+}
+
+test "what's painted near a pane goes over it: a moving pane runs a frame ahead" {
+    const frame = [_]gpu.Instance{
+        quad(0, 0, 400, 300),
+        pane(10, 100, 200, 30), // the tab pill, sliding up
+        quad(20, 70, 100, 14), // the label of the row it's about to reach, 16 points above it
+        quad(20, 250, 100, 14), // a row far below
+    };
+    var s: Split = .{};
+    defer s.deinit(testing.allocator);
+    try split(testing.allocator, &frame, &.{cand(1, 1)}, &s);
+    try testing.expectEqual(@as(usize, 1), s.over.items.len);
+    try testing.expectEqual(@as(f32, 70), s.over.items[0].rect[1]);
     try testing.expectEqual(@as(usize, 2), s.under.items.len);
 }
