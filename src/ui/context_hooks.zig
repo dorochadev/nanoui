@@ -156,6 +156,17 @@ pub fn hitAt(c: *const Context, p: types.Point) bool {
     return false;
 }
 
+/// The id of the topmost box that takes the pointer at `p`, if any.
+pub fn topHitAt(c: *const Context, p: types.Point) ?u64 {
+    var i = c.hits.items.len;
+    while (i > 0) {
+        i -= 1;
+        const h = c.hits.items[i];
+        if (!h.scroll and h.rect.contains(p)) return h.id;
+    }
+    return null;
+}
+
 pub fn inStageHoleAt(c: *const Context, p: types.Point) bool {
     if (c.active != 0 or c.hitAt(p)) return false;
     for (c.stage_rects[0..c.stage_count]) |r| {

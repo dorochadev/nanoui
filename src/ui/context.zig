@@ -553,5 +553,6 @@ pub const Context = struct {
     pub const addStageHoleNode = hooks.addStageHoleNode;
     pub const hitAt = hooks.hitAt;
     pub const inStageHoleAt = hooks.inStageHoleAt;
+    pub const topHitAt = hooks.topHitAt;
     pub const setScroll = @import("scroll_x.zig").setScroll;
 };

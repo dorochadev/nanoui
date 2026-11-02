@@ -93,6 +93,9 @@ fn hitTest(obj: objc.Object, _: objc.SEL, point: objc.CGPoint) callconv(.c) ?obj
         s.cursor_dirty = true;
         return null;
     }
+    // A control on native glass: the glass takes the press (it swells and
+    // flexes under it) and hands the events on to this view.
+    if (s.native_glass) |*ng| if (s.ctx.active == 0) if (s.ctx.topHitAt(p)) |id| if (ng.takesPress(id)) return null;
     return obj;
 }
 

@@ -2,9 +2,11 @@
 //! glass a frame can show natively (`glass_native.split`) is an
 //! NSGlassEffectView, between a Metal layer drawn under it (what it
 //! refracts) and the surface's own layer over it (what's on it). They sit
-//! in the host's view above the stage (`attachBackdrop`), and none takes
-//! the pointer: the surface's view gets it, and holes still pass it to the
-//! stage. A pane's view is kept from frame to frame by its node's id, and
+//! in the host's view above the stage (`attachBackdrop`). The surface's
+//! view gets the pointer, and holes still pass it to the stage, but for a
+//! control on interactive glass (macOS 27): there the glass takes the press,
+//! for its gesture to swell and flex it, and passes the events on to the
+//! surface's view as its next responder, so the control still works. A pane's view is kept from frame to frame by its node's id, and
 //! only what changed is set. No NSGlassEffectContainerView: it lifts its
 //! panes out of the views that clip them, and blurs glass on glass into one.
 const std = @import("std");
@@ -33,6 +35,8 @@ pub const NativeGlass = struct {
     frame: u64 = 0,
     /// The glass answers presses (`effectIsInteractive`, macOS 27).
     interactive: bool,
+    /// Where events a pane takes go on to: the surface's view.
+    surface_view: objc.Object,
 
     const View = struct {
         /// Clips the glass to what shows of its pane; fades it.
@@ -60,6 +64,7 @@ pub const NativeGlass = struct {
             .gpa = gpa,
             .under_view = under,
             .holder = holder,
+            .surface_view = surface_view,
             .interactive = objc.msg(objc.BOOL, glassClass(), "instancesRespondToSelector:", .{objc.sel("setEffectIsInteractive:")}) == objc.YES,
         };
     }
@@ -149,8 +154,19 @@ pub const NativeGlass = struct {
             objc.msg(void, v.glass, "setTintColor:", .{tint});
         }
         if (last == null or last.?.opacity != p.opacity) objc.msg(void, v.clip, "setAlphaValue:", .{@as(f64, p.opacity)});
-        if (ng.interactive and (last == null or last.?.interactive != p.interactive)) objc.msg(void, v.glass, "setEffectIsInteractive:", .{if (p.interactive) objc.YES else objc.NO});
+        if (ng.interactive and (last == null or last.?.interactive != p.interactive)) {
+            objc.msg(void, v.glass, "setEffectIsInteractive:", .{if (p.interactive) objc.YES else objc.NO});
+            // A control's glass is hit, and hands on what it doesn't use.
+            objc.setZig(v.glass, if (p.interactive) @ptrCast(ng.surface_view) else null);
+        }
         v.last = p;
+    }
+
+    /// Whether the pane drawn for node `id` takes the press under the
+    /// pointer: it's a control, on interactive glass.
+    pub fn takesPress(ng: *const NativeGlass, id: u64) bool {
+        const v = ng.views.get(id) orelse return false;
+        return ng.interactive and v.last != null and v.last.?.interactive;
     }
 
     fn drop(v: View) void {
@@ -170,30 +186,47 @@ fn make(cls: objc.Class, frame: objc.CGRect) objc.Object {
     return objc.msg(objc.Object, objc.msg(objc.Object, cls, "alloc", .{}), "initWithFrame:", .{frame});
 }
 
-/// A flipped view the pointer goes through.
+/// A flipped view the pointer goes through, to a pane in it that takes it.
 fn passClass() objc.Class {
     return objc.defineClass(.{
         .name = "NanoUIGlassPassView",
         .superclass = "NSView",
         .methods = &.{
             .{ .name = "isFlipped", .imp = &yes, .types = "c@:" },
-            .{ .name = "hitTest:", .imp = &passes, .types = "@@:{CGPoint=dd}" },
+            .{ .name = "hitTest:", .imp = &passThrough, .types = "@@:{CGPoint=dd}" },
         },
     });
 }
 
+/// A pane: only a control's (its Zig pointer the surface's view) is hit,
+/// and what it doesn't use goes on to the surface's view.
 fn glassClass() objc.Class {
     return objc.defineClass(.{
         .name = "NanoUIGlassView",
         .superclass = "NSGlassEffectView",
-        .methods = &.{.{ .name = "hitTest:", .imp = &passes, .types = "@@:{CGPoint=dd}" }},
+        .methods = &.{
+            .{ .name = "hitTest:", .imp = &glassHit, .types = "@@:{CGPoint=dd}" },
+            .{ .name = "nextResponder", .imp = &onToSurface, .types = "@@:" },
+        },
     });
+}
+
+fn passThrough(self: objc.Object, _: objc.SEL, p: objc.CGPoint) callconv(.c) ?objc.Object {
+    const hit = objc.msgSuper(?objc.Object, self, objc.class("NSView"), "hitTest:", .{p}) orelse return null;
+    return if (hit == self) null else hit;
+}
+
+fn glassHit(self: objc.Object, _: objc.SEL, p: objc.CGPoint) callconv(.c) ?objc.Object {
+    if (objc.getZig(anyopaque, self) == null) return null;
+    return objc.msgSuper(?objc.Object, self, objc.class("NSGlassEffectView"), "hitTest:", .{p});
+}
+
+fn onToSurface(self: objc.Object, _: objc.SEL) callconv(.c) ?objc.Object {
+    if (objc.getZig(anyopaque, self)) |view| return @ptrCast(view);
+    return objc.msgSuper(?objc.Object, self, objc.class("NSGlassEffectView"), "nextResponder", .{});
 }
 
 fn yes(_: objc.Object, _: objc.SEL) callconv(.c) objc.BOOL {
     return objc.YES;
 }
 
-fn passes(_: objc.Object, _: objc.SEL, _: objc.CGPoint) callconv(.c) ?objc.Object {
-    return null;
-}
