@@ -22,6 +22,7 @@ pub const FrameLog = frame_log_mod.FrameLog;
 pub const KeysReleased = struct { ctx: ?*anyopaque, func: *const fn (ctx: ?*anyopaque, s: *Surface) void };
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 const pacing = @import("pacing.zig");
+const surface_glass = @import("surface_glass.zig");
 pub const Surface = struct {
     gpa: std.mem.Allocator,
     window: *Window,
@@ -80,6 +81,10 @@ pub const Surface = struct {
     /// Behind a stage (`attachBackdrop`): presents in a transaction when
     /// native views or geometry move.
     hosted: bool = false,
+    /// Glass as AppKit's own (`setNativeGlass`), and whether this frame has
+    /// any: then it's drawn in two layers, under the glass and over it.
+    native_glass: ?surface_glass.NativeGlass = null,
+    layered: bool = false,
     /// The focused box after the last frame, and the tooltip shown.
     last_focus: u64 = 0,
     tip: ?[]const u8 = null,
@@ -181,6 +186,7 @@ pub const Surface = struct {
                 objc.release(link);
             }
             if (self.tracking) |t| objc.release(t);
+            if (self.native_glass) |*ng| ng.deinit();
             a11y.clearCache(self);
             objc.release(self.nsview);
             self.instances.deinit(self.gpa);
@@ -312,6 +318,7 @@ pub const Surface = struct {
         const t_af0 = if (self.frame_log != null) cf.CACurrentMediaTime() else 0;
         const native_changed = if (self.after_frame) |af| af(self.after_frame_ctx, self) else false;
         if (self.dead) return;
+        self.layered = if (self.native_glass) |*ng| ng.update(self.instances.items, c.glass_candidates.items, self.size) else false;
         const after_frame_ms = if (self.frame_log != null) (cf.CACurrentMediaTime() - t_af0) * 1000 else 0;
         const sync = native_changed or self.in_live_resize or self.geometry_changed or self.pending_sync;
         self.geometry_changed = false;
@@ -439,14 +446,48 @@ pub const Surface = struct {
             rec.sync = sync;
             rec.atlas_reset = atlas_reset;
             const idx = fl.append(rec);
-            const ds = self.renderer.drawLogged(self.instances.items, self.atlasTexture(), self.size, clear, fl, idx);
+            const ds = self.renderer.drawLayered(self.overInstances(), self.underInstances(), self.atlasTexture(), self.size, clear, fl, idx);
             presented = ds.presented;
             if (presented) fl.setDraw(idx, ds.drawable_wait_ms, ds.encode_ms, ds.sync, ds.queued) else fl.dropLast();
         } else {
-            presented = self.renderer.drawLogged(self.instances.items, self.atlasTexture(), self.size, clear, null, 0).presented;
+            presented = self.renderer.drawLayered(self.overInstances(), self.underInstances(), self.atlasTexture(), self.size, clear, null, 0).presented;
         }
         if (presented) self.last_present_target = present_at;
         return presented;
+    }
+
+    /// The frame's instances for the surface's own layer: all of them, or,
+    /// with native glass showing, what's over the glass.
+    fn overInstances(self: *Surface) []const metal.Instance {
+        return if (self.layered) self.native_glass.?.split.over.items else self.instances.items;
+    }
+
+    fn underInstances(self: *Surface) ?[]const metal.Instance {
+        return if (self.layered) self.native_glass.?.split.under.items else null;
+    }
+
+    /// Shows panes of glass as AppKit's (NSGlassEffectView, macOS 26+),
+    /// refracting what's behind them in the window, the page under it
+    /// included; else nanoui's shader draws them. Only behind a stage
+    /// (`attachBackdrop`); whether it's on. Shaped panes stay the shader's.
+    pub fn setNativeGlass(self: *Surface, on: bool) bool {
+        if (on == (self.native_glass != null)) return on;
+        if (!on) {
+            self.native_glass.?.deinit();
+            self.native_glass = null;
+            self.layered = false;
+            self.ctx.native_glass = false;
+            self.requestFrame();
+            return false;
+        }
+        if (!self.hosted or !surface_glass.available()) return false;
+        const host = objc.msg(?objc.Object, self.nsview, "superview", .{}) orelse return false;
+        self.native_glass = surface_glass.NativeGlass.init(self.gpa, host, self.nsview, self.renderer.underLayer());
+        self.ctx.native_glass = true;
+        // The glass views move in the transaction the frames present in.
+        self.renderer.setInTransaction(true);
+        self.requestFrame();
+        return true;
     }
 
     pub fn setTransparent(self: *Surface, on: bool) void {
