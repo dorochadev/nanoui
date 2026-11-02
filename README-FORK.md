@@ -1,4 +1,4 @@
-# nanoui, forked for Nanobrowse
+# nanoui, forked for Asterisk
 
 nanoui 0.9.2 from https://github.com/justrach/nanoui at `2e863435cc00c92dfc86cfec4f29a32c08daaef0`, as Zig's package
 cache had it. Changes from upstream are listed here, so they can go back as pull requests:
