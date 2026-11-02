@@ -22,7 +22,7 @@ struct Instance {
     float kind;
     float clip_round;    // corners * 4096 + radius (gpu.zig's clipRound)
     float4 xf;           // angle0 rad, spin rad/s, pivot x, pivot y
-    float4 pulse;        // period s, scale_amp, alpha_low, unused
+    float4 pulse;        // period s, scale_amp, alpha_low, a glass pane's shape (glass.metal)
     float4 vel;          // blur vector x, y in points, face (0 both, 1 front, 2 back), mirror x
     float4 turn;         // angle about the vertical axis rad, eye distance pt (0 flat), pivot x, pivot y
 };

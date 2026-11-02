@@ -64,11 +64,78 @@ pub fn render(gpa: std.mem.Allocator, src: []const u8, opts: Options) ![]u8 {
     @memset(acc, 0);
     const cov = try gpa.alloc(f32, w * h);
     defer gpa.free(cov);
-    var f: Flattener = .{ .gpa = gpa };
-    defer f.deinit();
     var polys: raster.Polygons = .{ .gpa = gpa };
     defer polys.deinit();
+    const Painter = struct {
+        polys: *raster.Polygons,
+        current: [4]f32,
+        w: usize,
+        h: usize,
+        cov: []f32,
+        acc: []f32,
+        fn visit(p: @This(), f: *Flattener, st: Style) !void {
+            try paint(f, p.polys, st, p.current, p.w, p.h, p.cov, p.acc);
+        }
+    };
+    try walk(gpa, src, w, h, Painter{ .polys = &polys, .current = opts.current, .w = w, .h = h, .cov = cov, .acc = acc });
+    const out = try gpa.alloc(u8, w * h * 4);
+    for (0..w * h) |i| {
+        const px = acc[i * 4 ..][0..4];
+        out[i * 4 + 0] = byte(px[2]);
+        out[i * 4 + 1] = byte(px[1]);
+        out[i * 4 + 2] = byte(px[0]);
+        out[i * 4 + 3] = byte(px[3]);
+    }
+    return out;
+}
 
+/// What the document fills, fitted into `width` × `height` pixels as
+/// `render` draws it: each filled shape's outline, its subpaths closed, and
+/// its fill rule. Colors, opacity and strokes are left out.
+pub const Outline = struct {
+    gpa: std.mem.Allocator,
+    points: std.ArrayList(geom.Point) = .empty,
+    rings: std.ArrayList(Ring) = .empty,
+    /// A shape's fill rule, by the index its rings carry.
+    rules: std.ArrayList(raster.Rule) = .empty,
+
+    pub const Ring = struct { start: usize, len: usize, shape: usize };
+
+    pub fn deinit(o: *Outline) void {
+        o.points.deinit(o.gpa);
+        o.rings.deinit(o.gpa);
+        o.rules.deinit(o.gpa);
+    }
+
+    pub fn of(o: *const Outline, r: Ring) []const geom.Point {
+        return o.points.items[r.start..][0..r.len];
+    }
+
+    fn visit(o: *Outline, f: *Flattener, st: Style) !void {
+        if (st.fill == .none) return;
+        const index = o.rules.items.len;
+        try o.rules.append(o.gpa, st.rule);
+        for (f.subpaths.items) |s| {
+            if (s.len < 3) continue;
+            try o.rings.append(o.gpa, .{ .start = o.points.items.len, .len = s.len, .shape = index });
+            try o.points.appendSlice(o.gpa, f.of(s));
+        }
+    }
+};
+
+pub fn outline(gpa: std.mem.Allocator, src: []const u8, width: u32, height: u32) !Outline {
+    if (width == 0 or height == 0) return error.BadSize;
+    var o: Outline = .{ .gpa = gpa };
+    errdefer o.deinit();
+    try walk(gpa, src, width, height, &o);
+    return o;
+}
+
+/// Each shape the document draws, its outline flattened into the picture's
+/// pixels, handed to `visitor.visit` with its style.
+fn walk(gpa: std.mem.Allocator, src: []const u8, w: usize, h: usize, visitor: anytype) !void {
+    var f: Flattener = .{ .gpa = gpa };
+    defer f.deinit();
     var stack: [32]Style = undefined;
     var depth: usize = 0;
     var skip_depth: usize = 0;
@@ -106,18 +173,9 @@ pub fn render(gpa: std.mem.Allocator, src: []const u8, opts: Options) ![]u8 {
         f.clear();
         f.t = st.t;
         if (!try shape(&f, tag)) continue;
-        try paint(&f, &polys, st, opts.current, w, h, cov, acc);
+        try visitor.visit(&f, st);
     }
     if (!seen_root) return error.NotSvg;
-    const out = try gpa.alloc(u8, w * h * 4);
-    for (0..w * h) |i| {
-        const px = acc[i * 4 ..][0..4];
-        out[i * 4 + 0] = byte(px[2]);
-        out[i * 4 + 1] = byte(px[1]);
-        out[i * 4 + 2] = byte(px[0]);
-        out[i * 4 + 3] = byte(px[3]);
-    }
-    return out;
 }
 
 fn byte(v: f32) u8 {

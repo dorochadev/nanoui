@@ -54,7 +54,9 @@ pub const Kind = struct {
     /// A pane of Liquid Glass over what was drawn before it (`glass.zig`):
     /// `color` its tint, `uv` its bezel, refraction, opacity and rim width,
     /// `border_color` its tone (low, high, curve, saturation), and
-    /// `border_width` the blur of what shows through, all in points.
+    /// `border_width` the blur of what shows through, all in points;
+    /// `pulse`'s w, when above 0, where its shape's field is in the image
+    /// atlas (`glass.shapeAt`).
     pub const glass: f32 = 4;
     /// A shadow drawn outside its box only (`Shadow.knockout`): what is
     /// under the box shows through it. `uv`'s x, y: where the box is from

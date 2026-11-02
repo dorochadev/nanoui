@@ -9,9 +9,15 @@
 //! Gaussian along rows and along columns, each step kept in 8 bits as a
 //! texture keeps it. The shader (`glass.metal`) and the CPU (`drawPane`)
 //! compute the same steps, so the CPU renderer matches Metal's.
+//!
+//! A pane in a shape (`Glass.shape`) takes its edge, how far inside it a
+//! pixel is and which way the edge faces from the shape's distance field
+//! in the image atlas (`glass_field.zig`) instead of its rounded box.
 const std = @import("std");
 const types = @import("types.zig");
 const gpu = @import("gpu.zig");
+const images = @import("images.zig");
+const glass_field = @import("glass_field.zig");
 
 /// A pane's material, in points (but the tone, which is unitless).
 pub const Material = struct {
@@ -70,7 +76,8 @@ pub fn material(g: types.Glass, w: f32, h: f32, dark: bool, scale: f32) Material
 /// How much the rim is lit, at most.
 pub const rim = 0.35;
 
-/// The instance that draws a pane (`gpu.Kind.glass`), faded by `opacity`.
+/// The instance that draws a pane (`gpu.Kind.glass`), faded by `opacity`;
+/// a shaped pane's `pulse[3]` is then set by `shapeAt`.
 pub fn instance(m: Material, rect: [4]f32, radius: f32, clip: [4]f32, opacity: f32) gpu.Instance {
     return .{
         .rect = rect,
@@ -272,14 +279,141 @@ pub fn color(i: *const gpu.Instance, im: Image, px: f32, py: f32, scale: f32) [3
     const rr = @min(i.radius * scale, @min(hx, hy));
     const t = @max(-roundedBox(qx, qy, hx, hy, rr), 0);
     const bezel = i.uv[0] * scale;
-    const refraction = i.uv[1] * scale;
     const rim_width = i.uv[3] * scale;
     var n: [2]f32 = .{ 0, 0 };
     if (t < bezel or t < 3 * rim_width) n = normal(qx, qy, hx, hy, rr);
+    return shade(i, im, px, py, .{ .t = t, .n = n, .bezel = bezel, .refraction = i.uv[1] * scale }, scale);
+}
+
+/// Where a pixel is on a pane, in the frame's pixels: how much of it the
+/// pane covers, how far inside the pane's edge it is, the way the edge
+/// faces, and the bezel and refraction that bend what shows through.
+pub const Spot = struct {
+    edge: f32 = 1,
+    t: f32,
+    n: [2]f32,
+    bezel: f32,
+    refraction: f32,
+};
+
+/// A pane's shape as the renderers read it: its field (`glass_field.zig`)
+/// in the image atlas, whose texels are `pixels` (`side` a side).
+pub const Field = struct {
+    pixels: []const u8,
+    side: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    /// How far inside its edge the shape's deepest point is, in texels.
+    deepest: f32,
+
+    /// Pane `i`'s field, if it has one and the atlas is in memory.
+    pub fn of(i: *const gpu.Instance, pixels: []const u8, side: usize) ?Field {
+        if (i.pulse[3] <= 0 or pixels.len == 0) return null;
+        const k: usize = @intFromFloat(i.pulse[3] - 1);
+        const x = k % images.size;
+        const y = k / images.size;
+        const head = pixels[(y * side + x) * 4 ..][0..8];
+        return .{
+            .pixels = pixels,
+            .side = side,
+            .x = x,
+            .y = y,
+            .w = std.mem.readInt(u16, head[0..2], .little),
+            .h = std.mem.readInt(u16, head[2..4], .little),
+            .deepest = (@as(f32, @floatFromInt(std.mem.readInt(u16, head[4..6], .little))) - 32768) / 128,
+        };
+    }
+
+    /// The distance to the edge (texels) and the way it faces at texel
+    /// (`u`, `v`), clamped to the field, as the shader's `glass_field_texel`.
+    fn texel(f: Field, u: i32, v: i32) [3]f32 {
+        const cx: usize = @intCast(std.math.clamp(u, 0, @as(i32, @intCast(f.w)) - 1));
+        const cy: usize = @intCast(std.math.clamp(v, 0, @as(i32, @intCast(f.h)) - 1));
+        const p = f.pixels[((f.y + 1 + cy) * f.side + f.x + cx) * 4 ..][0..4];
+        const d = @as(f32, @floatFromInt(p[0])) + @as(f32, @floatFromInt(p[1])) * 256;
+        return .{ (d - 32768) / 128, (@as(f32, @floatFromInt(p[2])) - 128) / 127, (@as(f32, @floatFromInt(p[3])) - 128) / 127 };
+    }
+
+    /// The shape at (`qx`, `qy`), pixels from the corner of a pane `w` ×
+    /// `h` pixels, bilinear from its texels: the distance to its edge
+    /// (pixels, less than 0 inside), the way the edge faces, and how deep
+    /// its deepest point is (pixels), as the shader's `glass_field`.
+    pub fn sample(f: Field, qx: f32, qy: f32, w: f32, h: f32) [4]f32 {
+        const fw: f32 = @floatFromInt(f.w);
+        const fh: f32 = @floatFromInt(f.h);
+        const k = 0.5 * (w / fw + h / fh);
+        const u = qx / w * fw - 0.5;
+        const v = qy / h * fh - 0.5;
+        const fu = @floor(u);
+        const fv = @floor(v);
+        const tx = u - fu;
+        const ty = v - fv;
+        const iu: i32 = @intFromFloat(fu);
+        const iv: i32 = @intFromFloat(fv);
+        const a = f.texel(iu, iv);
+        const b = f.texel(iu + 1, iv);
+        const c = f.texel(iu, iv + 1);
+        const d = f.texel(iu + 1, iv + 1);
+        var s: [3]f32 = undefined;
+        for (0..3) |ch| {
+            const top = a[ch] * (1 - tx) + b[ch] * tx;
+            const bot = c[ch] * (1 - tx) + d[ch] * tx;
+            s[ch] = top * (1 - ty) + bot * ty;
+        }
+        return .{ s[0] * k, s[1], s[2], f.deepest * k };
+    }
+};
+
+/// Where pixel center (`px`, `py`) is on pane `i` in the shape of field
+/// `f`, as `fs_glass` finds it: the bezel no deeper than the shape, its
+/// refraction lessened with it.
+pub fn onField(i: *const gpu.Instance, f: Field, px: f32, py: f32, scale: f32) Spot {
+    const s = f.sample(px - i.rect[0] * scale, py - i.rect[1] * scale, i.rect[2] * scale, i.rect[3] * scale);
+    const aa = @max(@abs(s[1]) + @abs(s[2]), 0.0001) * 0.5;
+    var spot: Spot = .{
+        .edge = 1 - smoothstep(-aa, aa, s[0]),
+        .t = @max(-s[0], 0),
+        .n = .{ s[1], s[2] },
+        .bezel = i.uv[0] * scale,
+        .refraction = i.uv[1] * scale,
+    };
+    if (s[3] < spot.bezel) {
+        spot.refraction *= s[3] / spot.bezel;
+        spot.bezel = s[3];
+    }
+    return spot;
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) f32 {
+    const t = std.math.clamp((x - e0) / (e1 - e0), 0, 1);
+    return t * t * (3 - 2 * t);
+}
+
+/// The key of pane `shape`'s field for a pane `w` × `h` pixels, and the
+/// field drawn into the image atlas: what goes in the pane's `pulse[3]`
+/// (1 + its x + its y × the atlas's side). Null when the field can't be
+/// had: not yet this frame, or an SVG that can't be read.
+pub fn shapeAt(im: *images.Images, shape: types.Glass.Shape, w: f32, h: f32) ?f32 {
+    const size = glass_field.sizeFor(w, h);
+    var hasher = std.hash.Wyhash.init(0x91a55);
+    hasher.update(shape.key);
+    hasher.update(std.mem.asBytes(&size));
+    const e = im.field(hasher.final(), shape.svg, size[0], size[1]) orelse return null;
+    const side: f32 = @floatFromInt(images.size);
+    return 1 + @round(e.uv[0] * side) + @round(e.uv[1] * side) * side;
+}
+
+/// The glass's color at pixel center (`px`, `py`), at `spot` on the pane.
+pub fn shade(i: *const gpu.Instance, im: Image, px: f32, py: f32, spot: Spot, scale: f32) [3]f32 {
+    const t = spot.t;
+    const n = spot.n;
+    const rim_width = i.uv[3] * scale;
     var sx = px;
     var sy = py;
-    if (t < bezel) {
-        const d = refraction * lens(t, bezel);
+    if (t < spot.bezel) {
+        const d = spot.refraction * lens(t, spot.bezel);
         sx -= n[0] * d;
         sy -= n[1] * d;
     }

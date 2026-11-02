@@ -100,9 +100,44 @@ static float3 glass_tone(float3 c, float4 tone) {
     return clamp(t + (c - l) * k, 0.0, 1.0);
 }
 
+// A shaped pane's field in the image atlas (glass_field.zig), its texel p
+// clamped to its w x h texels below the header row at o: the distance to
+// the edge (texels) and the way it faces. BGRA8: b is byte 0, g byte 1.
+static float3 glass_field_texel(texture2d<float> t, uint2 o, int2 p, int2 size) {
+    float4 c = round(t.read(o + uint2(clamp(p, int2(0), size - 1)) + uint2(0, 1)) * 255.0);
+    return float3((c.b + c.g * 256.0 - 32768.0) / 128.0, (c.r - 128.0) / 127.0, (c.a - 128.0) / 127.0);
+}
+
+// The shape at q, pixels from the corner of a pane size pixels, from its
+// field at `at` (1 + x + y * 2048) in the image atlas, bilinear: the
+// distance to its edge (pixels, less than 0 inside), the way the edge
+// faces, and how deep its deepest point is (pixels).
+static float4 glass_field(texture2d<float> t, float at, float2 q, float2 size) {
+    uint k = uint(at) - 1u;
+    uint2 o = uint2(k & 2047u, k >> 11);
+    float4 h0 = round(t.read(o) * 255.0);
+    float4 h1 = round(t.read(o + uint2(1, 0)) * 255.0);
+    int2 n = int2(int(h0.b + h0.g * 256.0), int(h0.r + h0.a * 256.0));
+    float2 nf = float2(n);
+    float px = 0.5 * (size.x / nf.x + size.y / nf.y);
+    float2 u = q / size * nf - 0.5;
+    float2 f = floor(u);
+    float2 w = u - f;
+    int2 p = int2(f);
+    float3 a = glass_field_texel(t, o, p, n);
+    float3 b = glass_field_texel(t, o, p + int2(1, 0), n);
+    float3 c = glass_field_texel(t, o, p + int2(0, 1), n);
+    float3 d = glass_field_texel(t, o, p + int2(1, 1), n);
+    float3 top = a * (1.0 - w.x) + b * w.x;
+    float3 bot = c * (1.0 - w.x) + d * w.x;
+    float3 v = top * (1.0 - w.y) + bot * w.y;
+    return float4(v.x * px, v.y, v.z, (h1.b + h1.g * 256.0 - 32768.0) / 128.0 * px);
+}
+
 fragment float4 fs_glass(VOut in [[stage_in]],
                          constant Instance *instances [[buffer(0)]],
                          constant GlassPane &pane [[buffer(1)]],
+                         texture2d<float> images [[texture(1)]],
                          texture2d<float> backdrop [[texture(2)]]) {
     Instance i = instances[in.inst];
     float clip_cover = clip_coverage(in, i);
@@ -110,21 +145,37 @@ fragment float4 fs_glass(VOut in [[stage_in]],
     float2 hp = i.rect.zw * 0.5;
     float d = rounded_box(in.local - hp, hp, min(i.radius, min(hp.x, hp.y)));
     float aa = max(fwidth(d), 0.0001) * 0.5;
-    float coverage = (1.0 - smoothstep(-aa, aa, d)) * clip_cover * i.uv.z;
+    float edge = 1.0 - smoothstep(-aa, aa, d);
 
     // The optics, in the frame's pixels.
     float s = pane.scale;
     float2 p = in.world * s;
     float2 h = hp * s;
     float2 q = p - i.rect.xy * s - h;
-    float rr = min(i.radius * s, min(h.x, h.y));
-    float t = max(-rounded_box(q, h, rr), 0.0);
     float bezel = i.uv.x * s;
+    float refraction = i.uv.y * s;
     float rim_width = i.uv.w * s;
+    float t;
     float2 n = float2(0.0);
-    if (t < bezel || t < 3.0 * rim_width) n = glass_normal(q, h, rr);
+    if (i.pulse.w > 0.0) {
+        // In a shape: its edge, depth and facing from its field instead.
+        float4 f = glass_field(images, i.pulse.w, p - i.rect.xy * s, i.rect.zw * s);
+        float fa = max(abs(f.y) + abs(f.z), 0.0001) * 0.5;
+        edge = 1.0 - smoothstep(-fa, fa, f.x);
+        t = max(-f.x, 0.0);
+        n = f.yz;
+        if (f.w < bezel) {
+            refraction *= f.w / bezel;
+            bezel = f.w;
+        }
+    } else {
+        float rr = min(i.radius * s, min(h.x, h.y));
+        t = max(-rounded_box(q, h, rr), 0.0);
+        if (t < bezel || t < 3.0 * rim_width) n = glass_normal(q, h, rr);
+    }
+    float coverage = edge * clip_cover * i.uv.z;
     float2 at = p;
-    if (t < bezel) at -= n * (i.uv.y * s * glass_lens(t, bezel));
+    if (t < bezel) at -= n * (refraction * glass_lens(t, bezel));
     float3 c = glass_tone(glass_sample(backdrop, pane, at), i.border_color);
     c += (i.color.rgb - c) * i.color.a;
     if (t < 3.0 * rim_width) {

@@ -63,7 +63,9 @@ pub const SvgSpec = struct {
     width: u32,
     height: u32,
     /// `currentColor`, straight RGBA.
-    current: [4]f32,
+    current: [4]f32 = .{ 0, 0, 0, 1 },
+    /// Drawn as a pane of glass's shape (`glass_field.zig`) instead.
+    field: bool = false,
 };
 
 pub const Images = struct {
@@ -131,7 +133,7 @@ pub const Images = struct {
 
     fn getDecoded(im: *Images, sk: SizedKey, bytes: []const u8) ?Decoded {
         if (im.decoded.get(sk)) |d| return d;
-        const d = (if (im.svgs.get(sk.key)) |spec| drawSvg(im.gpa, bytes, spec) else load(im.gpa, bytes, sk.side)) catch null;
+        const d = (if (im.svgs.get(sk.key)) |spec| (if (spec.field) drawField(im.gpa, bytes, spec) else drawSvg(im.gpa, bytes, spec)) else load(im.gpa, bytes, sk.side)) catch null;
         if (d) |x| im.kept_bytes += x.bgra.len;
         im.decoded.put(im.gpa, sk, d) catch {
             if (d) |x| im.gpa.free(x.bgra);
@@ -157,6 +159,14 @@ pub const Images = struct {
     pub fn infoSvg(im: *Images, k: u64, bytes: []const u8, spec: SvgSpec) ?Decoded {
         im.svgs.put(im.gpa, k, spec) catch return null;
         return im.getDecoded(.{ .key = k, .side = spec.width }, bytes);
+    }
+
+    /// The shape of a pane of glass, the SVG document `bytes` as a distance
+    /// field `width` × `height` (`glass_field.zig`), as picture `k`, in
+    /// the atlas; null if it can't be drawn, or not this frame.
+    pub fn field(im: *Images, k: u64, bytes: []const u8, width: u32, height: u32) ?Entry {
+        im.svgs.put(im.gpa, k, .{ .width = width, .height = height, .field = true }) catch return null;
+        return im.get(k, bytes, width);
     }
 
     /// The atlas as the CPU renderer reads it.
@@ -279,6 +289,11 @@ fn probeHeader(bytes: []const u8) ?Info {
 fn drawSvg(gpa: std.mem.Allocator, bytes: []const u8, spec: SvgSpec) !Decoded {
     const px = try @import("svg.zig").render(gpa, bytes, .{ .width = spec.width, .height = spec.height, .current = spec.current });
     return .{ .width = spec.width, .height = spec.height, .w = spec.width, .h = spec.height, .bgra = px };
+}
+
+fn drawField(gpa: std.mem.Allocator, bytes: []const u8, spec: SvgSpec) !Decoded {
+    const px = try @import("glass_field.zig").draw(gpa, bytes, spec.width, spec.height);
+    return .{ .width = spec.width, .height = spec.height, .w = spec.width, .h = spec.height + 1, .bgra = px };
 }
 
 const Raw = struct { width: u32, height: u32, bgra: []u8 };

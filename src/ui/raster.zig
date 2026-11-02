@@ -262,7 +262,7 @@ fn drawOne(out: gpu.Pixels, i: *const gpu.Instance, mask: Mask, pictures: Pictur
         return;
     }
     if (i.kind == gpu.Kind.shadow or i.kind == gpu.Kind.shadow_out) return shadow(out, i, scale, b);
-    if (i.kind == gpu.Kind.glass) return pane(out, i, scale, b);
+    if (i.kind == gpu.Kind.glass) return pane(out, i, pictures, scale, b);
     if (i.kind == gpu.Kind.segment or i.kind == gpu.Kind.triangle or i.kind == gpu.Kind.hole) return shapes.draw(out, i, scale, b);
     quad(out, i, scale, b);
 }
@@ -548,8 +548,9 @@ fn picture(out: gpu.Pixels, i: *const gpu.Instance, p: Source, scale: f32, b: [4
 
 /// A pane of glass over what was drawn before it, as `glass.metal` draws
 /// it: its backdrop read from the pixels so far, then its color at each
-/// pixel, by its rounded edge's coverage.
-fn pane(out: gpu.Pixels, i: *const gpu.Instance, scale: f32, b: [4]usize) void {
+/// pixel, by its rounded edge's coverage, or its shape's.
+fn pane(out: gpu.Pixels, i: *const gpu.Instance, pictures: Pictures, scale: f32, b: [4]usize) void {
+    const field: ?glass.Field = if (i.pulse[3] > 0) glass.Field.of(i, pictures.pixels, pictures.size) orelse return else null;
     const plan = glass.backdropOf(i.rect, i.border_width, scale, out.width, out.height) orelse return;
     const im = glass.readBackdrop(std.heap.page_allocator, out, plan) catch return;
     defer std.heap.page_allocator.free(im.pix);
@@ -562,6 +563,16 @@ fn pane(out: gpu.Pixels, i: *const gpu.Instance, scale: f32, b: [4]usize) void {
         const row = y * out.width * 4;
         for (b[0]..b[2]) |x| {
             const wx = (@as(f32, @floatFromInt(x)) + 0.5) * inv;
+            if (field) |f| {
+                const fx = @as(f32, @floatFromInt(x)) + 0.5;
+                const fy = @as(f32, @floatFromInt(y)) + 0.5;
+                const spot = glass.onField(i, f, fx, fy, scale);
+                const k = spot.edge * clipCover(i, wx, wy, inv) * i.uv[2];
+                if (k <= 0) continue;
+                const c = glass.shade(i, im, fx, fy, spot, scale);
+                blend(out.bytes, row + x * 4, c[0] * k, c[1] * k, c[2] * k, k);
+                continue;
+            }
             const sd = roundedBox(wx - i.rect[0] - hw, wy - i.rect[1] - hh, hw, hh, r);
             const aa = @max(sd[1] * inv, 0.0001) * 0.5;
             const k = (1 - smoothstep(-aa, aa, sd[0])) * clipCover(i, wx, wy, inv) * i.uv[2];

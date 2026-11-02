@@ -137,6 +137,19 @@ pub const Glass = struct {
     style: Kind = .regular,
     /// Colors the glass toward this, by its alpha: a prominent button's.
     tint: Color = .transparent,
+    /// The pane in this shape instead of its rounded box: what an SVG
+    /// document fills (holes and all), its viewBox fitted into the box,
+    /// centered and keeping its proportions. Its edge bends and is lit as
+    /// a rounded box's. Metal and the CPU renderer draw it; D3D11 and
+    /// OpenGL draw the rounded box. Hit testing is still the box's.
+    shape: ?Shape = null,
+
+    pub const Shape = struct {
+        /// Names the shape: its field is drawn once for each key and size.
+        key: []const u8,
+        /// The SVG document, kept by the caller while it is shown.
+        svg: []const u8,
+    };
 
     pub const Kind = enum {
         /// Frosts and lightens (darkens, in dark mode) what shows through,

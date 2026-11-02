@@ -128,7 +128,15 @@ fn paintNode(c: *Context, out: *std.ArrayList(metal.Instance), index: u32, clip:
         for (st.shadows) |sh| paintShadow(c, out, sh, r, rad, opacity, clip4);
         // Glass takes the background's place.
         const fill: ?types.Color = if (st.glass != null) null else st.background;
-        if (st.glass) |g| push(c, out, glass.instance(glass.material(g, rect4[2], rect4[3], c.theme.dark, c.scale), rect4, st.radius, clip4, opacity));
+        if (st.glass) |g| {
+            var pane = glass.instance(glass.material(g, rect4[2], rect4[3], c.theme.dark, c.scale), rect4, st.radius, clip4, opacity);
+            // A shape whose field can't be had (yet) leaves no pane.
+            const shaped: ?f32 = if (g.shape) |sh| glass.shapeAt(&c.text.images, sh, rect4[2] * c.scale, rect4[3] * c.scale) else 0;
+            if (shaped) |at| {
+                pane.pulse[3] = at;
+                push(c, out, pane);
+            }
+        }
         if (fill != null or st.border != null) push(c, out, .{
             .rect = rect4,
             .color = metal.color4((fill orelse types.Color.transparent).alpha(opacity)),
@@ -233,7 +241,8 @@ fn paintNode(c: *Context, out: *std.ArrayList(metal.Instance), index: u32, clip:
             if (inst.kind == metal.Kind.layer_begin or inst.kind == metal.Kind.layer_end) continue;
             if (inst.xf[0] == 0 and inst.xf[1] == 0 and inst.xf[2] == 0 and inst.xf[3] == 0 and inst.pulse[0] == 0 and inst.pulse[1] == 0) {
                 inst.xf = .{ st.rotation, st.spin, px, py };
-                inst.pulse = p4;
+                // A pane's `pulse[3]` is its shape's.
+                inst.pulse = .{ p4[0], p4[1], p4[2], inst.pulse[3] };
             }
         }
     }
