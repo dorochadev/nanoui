@@ -86,11 +86,10 @@ pub const NativeGlass = struct {
     pub fn update(ng: *NativeGlass, instances: []const @import("gpu.zig").Instance, candidates: []const glass_native.Candidate, size: types.Size) bool {
         glass_native.split(ng.gpa, instances, candidates, &ng.split) catch return false;
         ng.frame += 1;
-        const cat = objc.class("CATransaction");
-        objc.msg(void, cat, "begin", .{});
-        // Panes move with the frame, not after it.
-        objc.msg(void, cat, "setDisableActions:", .{objc.YES});
-        defer objc.msg(void, cat, "commit", .{});
+        // In the transaction the frame presents in (its layers present with
+        // it): a transaction of their own would put the panes on screen a
+        // refresh before what's drawn over and under them.
+        objc.msg(void, objc.class("CATransaction"), "setDisableActions:", .{objc.YES});
         const panes = ng.split.panes.items;
         var reorder = panes.len != ng.order.items.len;
         if (!reorder) for (panes, ng.order.items) |p, id| if (p.id != id) {
