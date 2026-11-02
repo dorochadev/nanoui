@@ -17,6 +17,7 @@ pub fn paint(c: *Context, out: *std.ArrayList(metal.Instance)) void {
     c.scrollbars.clearRetainingCapacity();
     c.text.images.beginPaint();
     c.layers.clearRetainingCapacity();
+    c.glass_candidates.clearRetainingCapacity();
     paintNode(c, out, 0, types.Rect.infinite, 1, false, 0);
     // Higher layers over the page, lowest first; within one, in tree order.
     var done: usize = 0;
@@ -134,6 +135,14 @@ fn paintNode(c: *Context, out: *std.ArrayList(metal.Instance), index: u32, clip:
             const shaped: ?f32 = if (g.shape) |sh| glass.shapeAt(&c.text.images, sh, rect4[2] * c.scale, rect4[3] * c.scale) else 0;
             if (shaped) |at| {
                 pane.pulse[3] = at;
+                // A shaped pane, or one in an opacity group, stays the shader's.
+                if (c.native_glass and g.shape == null and !c.painting_group) c.glass_candidates.append(c.gpa, .{
+                    .at = @intCast(out.items.len),
+                    .id = n.id,
+                    .style = g.style,
+                    .tint = g.tint,
+                    .interactive = st.control,
+                }) catch {};
                 push(c, out, pane);
             }
         }

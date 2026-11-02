@@ -233,3 +233,26 @@ test "glass in a shape: its holes show what's under them, its body frosts and be
         }
     }
 }
+
+test "native glass: the scene's panes go between the layers, their labels over" {
+    const gpa = testing.allocator;
+    var s: Scene = .{};
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, Scene.view), .{ .width = 360, .height = 290 });
+    defer t.deinit();
+    t.ctx.native_glass = true;
+    t.settle(1);
+    try testing.expectEqual(@as(usize, 3), t.ctx.glass_candidates.items.len);
+    var split: @import("glass_native.zig").Split = .{};
+    defer split.deinit(gpa);
+    try @import("glass_native.zig").split(gpa, t.instances.items, t.ctx.glass_candidates.items, &split);
+    // The bar, the button on it (glass on glass, nothing drawn between), the clear pane.
+    try testing.expectEqual(@as(usize, 3), split.panes.items.len);
+    try testing.expectEqual(ui.Glass.Kind.clear, split.panes.items[2].style);
+    try testing.expectEqual(@as(f32, 26), split.panes.items[0].radius);
+    for (split.under.items) |i| try testing.expect(i.kind != gpu.Kind.glass);
+    for (split.over.items) |i| try testing.expect(i.kind != gpu.Kind.glass);
+    // The labels on the glass are over it; the stripes and their text under.
+    try testing.expect(split.over.items.len >= 2);
+    try testing.expect(split.under.items.len > split.over.items.len);
+}

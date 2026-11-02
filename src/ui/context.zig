@@ -133,6 +133,10 @@ pub const Context = struct {
     /// and the one being drawn so.
     layers: std.ArrayList(u32) = .empty,
     layer_root: u32 = std.math.maxInt(u32),
+    /// The surface shows glass as native views (`glass_native.zig`): paint
+    /// marks the panes that may be, in `glass_candidates`.
+    native_glass: bool = false,
+    glass_candidates: std.ArrayList(@import("glass_native.zig").Candidate) = .empty,
     scroll: std.AutoHashMapUnmanaged(u64, f32) = .empty,
     /// Rubber-band overscroll offset by box id (`scroll.zig`).
     overscroll: std.AutoHashMapUnmanaged(u64, f32) = .empty,
@@ -261,6 +265,7 @@ pub const Context = struct {
         c.motion_store.deinit(c.gpa);
         c.memory.deinit(c.gpa);
         c.layers.deinit(c.gpa);
+        c.glass_candidates.deinit(c.gpa);
         c.scroll.deinit(c.gpa);
         c.overscroll.deinit(c.gpa);
         c.scrollbars.deinit(c.gpa);

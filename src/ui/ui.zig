@@ -204,6 +204,7 @@ test {
     _ = @import("tests_raster.zig");
     _ = @import("glass.zig");
     _ = @import("glass_field.zig");
+    _ = @import("glass_native.zig");
     _ = @import("tests_glass.zig");
     _ = @import("tests_overlay_bar.zig");
     _ = @import("tests_border.zig");
