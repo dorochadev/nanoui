@@ -24,3 +24,7 @@ cache had it. Changes from upstream are listed here, so they can go back as pull
   Debug build (8 ms in ReleaseFast), once per size: a pane that animates its size draws one each frame.
   **D3D11 and OpenGL ignore the shape** and draw the pane's rounded box (the div's radius).
   Test: `tests_glass.zig`'s "glass in a shape" (a ring and the asterisk mark over stripes, CPU vs Metal).
+
+- **`ui.hole` lets the pointer through.** It marked its box interactive and never registered it as a stage hole, so
+  the frame took every click over it and the native view under it (a web page) got none. It now registers the node
+  (`addStageHoleNode`) and isn't a control, so `inStageHoleAt` hands the pointer to the view below.
