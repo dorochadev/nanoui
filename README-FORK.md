@@ -33,3 +33,7 @@ cache had it. Changes from upstream are listed here, so they can go back as pull
   `pointerOverText` alone (text that selects), which a text field isn't: the cursor turned to the arrow on every
   move and back to the I-beam on every frame. A field (or text area) under the pointer now sets
   `Context.cursor_field` as it's built, and the I-beam stays anywhere in it.
+
+- **The caret stands before its place.** A text field's bar caret was drawn from the boundary rightwards, over the
+  first 1.5 points of the letter after it: in an empty field it sat on the placeholder's first letter. It now ends at
+  the boundary (`textfield.zig`, `textfield_lines.zig`); Vim's block still covers the letter it's on.

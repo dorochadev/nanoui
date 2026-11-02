@@ -114,7 +114,9 @@ pub fn draw(c: *Context, s: []const u8, e: *EditState, style: types.TextStyle, l
     if (focused and hi == lo) {
         const l = lines[k];
         const w: f32 = if (!block) 1.5 else if (e.caret < l.end) @max(4, caretX(c, s, style, l, e.caret + 1) - cx) else c.text.width("m", style);
-        _ = c.leaf(.{ .absolute = true, .width = .{ .px = w }, .height = .{ .px = lh }, .background = if (block) th.accent.alpha(0.45) else th.accent, .offset = .{ .x = cx, .y = cy } }, .none, null);
+        // The bar ends at the boundary rather than starting there, so it
+        // never covers the letter after it (a placeholder's first, say).
+        _ = c.leaf(.{ .absolute = true, .width = .{ .px = w }, .height = .{ .px = lh }, .background = if (block) th.accent.alpha(0.45) else th.accent, .offset = .{ .x = if (block) cx else cx - w, .y = cy } }, .none, null);
     }
     return .{ .caret = .{ .x = cx, .y = cy - e.scroll_y }, .line = k, .lines = lines.len };
 }

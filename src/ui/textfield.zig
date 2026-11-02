@@ -506,7 +506,9 @@ pub fn textField(c: *Context, buffer: *TextBuffer, opts: Options) Result {
         // Vim's normal mode: a block over the character under the caret.
         const block = result.vim_normal;
         const w: f32 = if (!block) 1.5 else if (e.caret < s.len) @max(4, c.text.caretX(shown, style, shownIndex(s, opts.password, @min(s.len, e.caret + 1))) - caret_x) else c.text.width("m", style);
-        _ = c.leaf(.{ .absolute = true, .width = .{ .px = w }, .height = .{ .px = lh }, .background = if (block) th.accent.alpha(0.45) else opts.caret_color orelse th.accent, .offset = .{ .x = caret_x - e.scroll_x } }, .none, null);
+        // The bar ends at the boundary rather than starting there, so it
+        // never covers the letter after it (a placeholder's first, say).
+        _ = c.leaf(.{ .absolute = true, .width = .{ .px = w }, .height = .{ .px = lh }, .background = if (block) th.accent.alpha(0.45) else opts.caret_color orelse th.accent, .offset = .{ .x = caret_x - e.scroll_x - (if (block) 0 else w) } }, .none, null);
     }
     if (focused) {
         c.focused_password = opts.password;
